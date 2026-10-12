@@ -1,6 +1,6 @@
 set(GGML_VORTEX_HOME   "$ENV{HOME}/vortex" CACHE PATH   "Vortex source tree (runtime, kernel library, toolchain config)")
 option(GGML_VORTEX_EMU "Build the host emulation backend (Vortex TCU numerics, paced to a projected configuration) instead of the device backend" OFF)
-set(GGML_VORTEX_TARGET "H"                 CACHE STRING "Vortex bitstream the backend is built for: H, L1, L2 or J")
+set(GGML_VORTEX_TARGET "H"                 CACHE STRING "Vortex bitstream the backend is built for: H, L1, L2, J or W8")
 set(GGML_VORTEX_ITYPE  "bf16"              CACHE STRING "TCU operand format (bf16, fp16, tf32, fp8, mxfp8, mxfp4, nvfp4, lnsf4)")
 
 # Hardware configurations of the U55C llama bitstreams; the kernel and the host
@@ -15,6 +15,12 @@ elseif (GGML_VORTEX_TARGET STREQUAL "L1")
     set(_VX_NT 8)
     set(_VX_LMEM_LOG 14)
     set(_VX_HW "-DVX_CFG_NUM_THREADS=8 ${_VX_BASE} -DVX_CFG_TCU_FEDP2K -DVX_CFG_LMEM_LOG_SIZE=14 -DVX_CFG_NUM_DXA_CORES=1 ${_VX_FMTS}")
+elseif (GGML_VORTEX_TARGET STREQUAL "W8")
+    # llama_wmma_nt8_nw8_iw1_lmem64 (200 MHz): WMMA-only TCU, FP16/BF16/NVFP4/LNSF4, 64 KB LMEM
+    set(_VX_NT 8)
+    set(_VX_NW 8)
+    set(_VX_LMEM_LOG 16)
+    set(_VX_HW "-DVX_CFG_NUM_THREADS=8 -DVX_CFG_NUM_WARPS=8 -DVX_CFG_ISSUE_WIDTH=1 -DVX_CFG_EXT_TCU_ENABLE -DVX_CFG_TCU_USE_DSP=1 -DVX_CFG_LMEM_LOG_SIZE=16 -DVX_CFG_TCU_MX_ENABLE -DVX_CFG_TCU_FP4_ENABLE -DVX_CFG_TCU_NVFP4_ENABLE -DVX_CFG_TCU_LNSF4_ENABLE -DVX_CFG_TCU_LNSF4_ANTILOG_BITS=6")
 elseif (GGML_VORTEX_TARGET STREQUAL "J")
     # Jacob's wgdxa1c8t16w bitstream (FP16/BF16 only, default LMEM)
     set(_VX_NT 8)
@@ -25,7 +31,11 @@ elseif (GGML_VORTEX_TARGET STREQUAL "L2")
     set(_VX_LMEM_LOG 14)
     set(_VX_HW "-DVX_CFG_NUM_THREADS=16 ${_VX_BASE} -DVX_CFG_LMEM_LOG_SIZE=14 -DVX_CFG_NUM_DXA_CORES=1 ${_VX_FMTS}")
 else()
-    message(FATAL_ERROR "GGML_VORTEX_TARGET must be H, L1, L2 or J (got ${GGML_VORTEX_TARGET})")
+    message(FATAL_ERROR "GGML_VORTEX_TARGET must be H, L1, L2, J or W8 (got ${GGML_VORTEX_TARGET})")
+endif()
+
+if (NOT DEFINED _VX_NW)
+    set(_VX_NW 16)
 endif()
 
 set(GGML_VORTEX_BUILD "${GGML_VORTEX_HOME}/build_llama_${GGML_VORTEX_TARGET}" CACHE PATH "Configured Vortex build directory for the target bitstream")
@@ -74,9 +84,14 @@ target_include_directories(ggml-vortex PRIVATE
     ${GGML_VORTEX_BUILD}/sw
     ${GGML_VORTEX_KERNEL_SRC})
 
+# The host packs and quantizes operands for the same hardware configuration the
+# kernel is built for (thread/warp counts, LMEM, enabled TCU formats).
+separate_arguments(_VX_HW_LIST UNIX_COMMAND "${_VX_HW}")
+target_compile_options(ggml-vortex PRIVATE ${_VX_HW_LIST})
+
 target_compile_definitions(ggml-vortex PRIVATE
     VX_CFG_NUM_THREADS=${_VX_NT}
-    VX_CFG_NUM_WARPS=16
+    VX_CFG_NUM_WARPS=${_VX_NW}
     VX_CFG_LMEM_LOG_SIZE=${_VX_LMEM_LOG}
     ITYPE=${GGML_VORTEX_ITYPE}
     OTYPE=fp32

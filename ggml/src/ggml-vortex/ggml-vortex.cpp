@@ -104,7 +104,7 @@ struct vx_device_ctx {
         qi.priority    = VX_QUEUE_PRIORITY_NORMAL;
         VX_CHECK(vx_queue_create(dev, &qi, &q));
         VX_CHECK(vx_module_load_file(dev, kernel, &mod));
-        for (const char * k : {"linear_swap", "gemv", "act_pack", "act_scale", "binary", "glu_swiglu", "cpy",
+        for (const char * k : {"linear_swap", "linear_dec", "gemv", "act_pack", "act_scale", "binary", "glu_swiglu", "cpy",
                                "rms_norm", "rope", "flash_attn", "get_rows", "set_rows"}) {
             vx_kernel_h h = nullptr;
             VX_CHECK(vx_module_get_kernel(mod, k, &h));
@@ -319,6 +319,12 @@ act_layout act_layout_for(uint32_t T, uint32_t K) {
     return l;
 }
 
+// linear_dec local memory: per-warp C tiles, then the activation's first TILE
+// rows and their scale tiles (plus the one-past-the-end scale prefetch).
+uint32_t dec_lmem(uint32_t nkt) {
+    return (CTA_NW * TILE * TILE + nkt * TILE * KT_WORDS + (nkt + 1) * SC_TILE_WORDS) * 4;
+}
+
 void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
     const ggml_tensor * w = dst->src[0];
     const ggml_tensor * x = dst->src[1];
@@ -346,17 +352,21 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
         return;
     }
 
+    // linear_dec stores only the first T columns and MMA columns are
+    // independent, so its padding rows need not be packed.
+    static const bool dec_off = getenv("GGML_VORTEX_NO_DEC") != nullptr;
+    const bool dec = NT == TILE && T <= TILE && !dec_off && dec_lmem(nkt) <= (1u << VX_CFG_LMEM_LOG_SIZE);
     vx_act_args_t a = {};
     a.src    = vt_of(x);
     a.dst    = base + L.words;
     a.dst_sc = IS_MX ? base + L.scales : 0;
     a.row_ts = base + L.row_ts;
-    a.T = T; a.Tp = Tp; a.K = K; a.rb = LSW_BN;
+    a.T = T; a.Tp = dec ? T : Tp; a.K = K; a.rb = LSW_BN;
     a.runs = vx_div_make(K / QRUN);
     if (HAS_TSCALE) {
-        R.launch("act_scale", a, grid_for((uint64_t)Tp * NT));
+        R.launch("act_scale", a, grid_for((uint64_t)a.Tp * NT));
     }
-    R.launch("act_pack", a, grid_for((uint64_t)Tp * (K / QRUN)));
+    R.launch("act_pack", a, grid_for((uint64_t)a.Tp * (K / QRUN)));
 
     linear_args_t l = {};
     l.a = a.dst;
@@ -372,7 +382,11 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
     l.act = ACT_NONE;
     l.out_mode = OUT_FP32;
     l.ldo = N;
-    R.launch("linear_swap", l, N / LSW_BM, lin_swap_lmem(), Tp / LSW_BN);
+    if (dec) {
+        R.launch("linear_dec", l, 1, dec_lmem(nkt));
+    } else {
+        R.launch("linear_swap", l, N / LSW_BM, lin_swap_lmem(), Tp / LSW_BN);
+    }
     R.recs.back().node = dst;
 }
 
