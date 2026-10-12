@@ -336,7 +336,7 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
 
     // The SIMT GEMV streams W once per VX_GEMV_TMAX activation rows; above
     // GGML_VORTEX_GEMV_T rows the TCU GEMM takes over.
-    static const uint32_t gemv_t = getenv("GGML_VORTEX_GEMV_T") ? atoi(getenv("GGML_VORTEX_GEMV_T")) : UINT32_MAX;
+    static const uint32_t gemv_t = getenv("GGML_VORTEX_GEMV_T") ? atoi(getenv("GGML_VORTEX_GEMV_T")) : VX_GEMV_TMAX;
     if (!IS_MX && !HAS_TSCALE && F::bits == 16 && T <= gemv_t) {
         for (uint32_t t0 = 0; t0 < T; t0 += VX_GEMV_TMAX) {
             vx_gemv_args_t g = {};
@@ -352,10 +352,12 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
         return;
     }
 
-    // linear_dec stores only the first T columns and MMA columns are
-    // independent, so its padding rows need not be packed.
-    static const bool dec_off = getenv("GGML_VORTEX_NO_DEC") != nullptr;
-    const bool dec = NT == TILE && T <= TILE && !dec_off && dec_lmem(nkt) <= (1u << VX_CFG_LMEM_LOG_SIZE);
+    // linear_dec runs TILE activation rows per launch; up to GGML_VORTEX_DEC_T
+    // rows it beats linear_swap, which re-stages the weights per LSW_BN rows.
+    // It stores only real rows and MMA columns are independent, so padding
+    // rows need not be packed.
+    static const uint32_t dec_t = getenv("GGML_VORTEX_DEC_T") ? atoi(getenv("GGML_VORTEX_DEC_T")) : 64;
+    const bool dec = NT == TILE && T <= dec_t && dec_lmem(nkt) <= (1u << VX_CFG_LMEM_LOG_SIZE);
     vx_act_args_t a = {};
     a.src    = vt_of(x);
     a.dst    = base + L.words;
@@ -383,7 +385,19 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
     l.out_mode = OUT_FP32;
     l.ldo = N;
     if (dec) {
-        R.launch("linear_dec", l, 1, dec_lmem(nkt));
+        for (uint32_t t0 = 0; t0 < T; t0 += TILE) {
+            linear_args_t c = l;
+            c.a += 4ull * ((t0 / LSW_BN) * nkt * LSW_BN * KT_WORDS + (t0 % LSW_BN) * KT_WORDS);
+            if (IS_MX) {
+                c.a_sc += (uint64_t)(t0 / LSW_BN) * nkt * (LSW_BN / TILE) * SC_TILE_BYTES + (t0 % LSW_BN) / TILE * SC_TILE_BYTES;
+            }
+            if (HAS_TSCALE) {
+                c.row_scale += 4ull * t0;
+            }
+            c.out += (uint64_t)t0 * dst->nb[1];
+            c.M = std::min<uint32_t>(TILE, T - t0);
+            R.launch("linear_dec", c, 1, dec_lmem(nkt));
+        }
     } else {
         R.launch("linear_swap", l, N / LSW_BM, lin_swap_lmem(), Tp / LSW_BN);
     }
