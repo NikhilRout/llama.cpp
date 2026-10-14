@@ -12,18 +12,20 @@ mkdir -p "$LOGS"
 P=$LOGS/prompt.txt
 printf '<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n%s<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n' "$Q" > "$P"
 for F in $FMTS; do
-  L=$LOGS/$F.log
+  L=$LOGS/$F.log; A=$LOGS/$F.out
   echo "=== $F"
   GGML_VORTEX_BATCH=1 scripts/run_vx_board.sh build-vx-W8-$F/bin/llama-completion -m "$MODEL" -t 32 -c 2048 -nr -ngl 99 \
-    -fa on -ot "token_embd\.weight=CPU" -n "$N" --temp 0 -no-cnv -f "$P" > "$L" 2>&1
-  grep -av VXDRV "$L" | python3 -c "
-import re, sys
+    -fa on -ot "token_embd\.weight=CPU" -n "$N" --temp 0 -no-cnv -f "$P" > "$A" 2> "$L"
+  grep -av VXDRV "$A" | python3 -c "
+import sys
 t = sys.stdin.read()
 i = t.rfind('assistant')
-ans = t[i + 9:].split('\n\n', 2)[1] if i >= 0 and t[i + 9:].count('\n\n') >= 2 else ''
-print(ans.strip())
+print(t[i + 9:].strip() if i >= 0 else t.strip())"
+  grep -a 'eval time' "$L" | python3 -c "
+import re, sys
+t = sys.stdin.read()
 pf = re.search(r'prompt eval time .*?([0-9.]+) tokens per second', t)
-dc = re.search(r'\beval time .*?runs.*?([0-9.]+) tokens per second', t)
+dc = re.search(r'\n.*?\beval time .*?runs.*?([0-9.]+) tokens per second', '\n' + t)
 print(f'--- {sys.argv[1]}: prefill {pf.group(1) if pf else \"?\"} tok/s, decode {dc.group(1) if dc else \"?\"} tok/s')
 " "$F"
 done
