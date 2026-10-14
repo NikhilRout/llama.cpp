@@ -196,9 +196,10 @@ float bf16_to_f32(uint16_t h) {
     return u2f((uint32_t)h << 16);
 }
 
-// 2D BF16 weights the TCU GEMM can stream: stored in the blocked layout.
+// 2D BF16 weights the TCU GEMM can stream: stored in the blocked layout, so
+// only whole contiguous tensors (a view would index the packed bytes as rows).
 bool is_gemm_weight(const ggml_tensor * t) {
-    return t->type == GGML_TYPE_BF16 && ggml_n_dims(t) == 2 &&
+    return t->type == GGML_TYPE_BF16 && ggml_n_dims(t) == 2 && t->view_src == nullptr && ggml_is_contiguous(t) &&
            t->ne[0] % KT == 0 && t->ne[1] % LSW_BM == 0 &&
            (strstr(t->name, "weight") != nullptr || getenv("GGML_VORTEX_ANY_WEIGHT") != nullptr);
 }
