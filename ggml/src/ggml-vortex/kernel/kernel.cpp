@@ -192,7 +192,7 @@ __kernel void act_pack(vx_act_args_t* __UNIFORM__ arg) {
 // across lanes once per row.
 // ---------------------------------------------------------------------------
 static_assert(KT_WORDS == NT, "one K-tile word per lane");
-static_assert(std::is_same<IT, vt::bf16>::value || !(F::bits == 16), "GEMV decodes bf16 words");
+constexpr bool GEMV_OK = std::is_same<IT, vt::bf16>::value;   // the GEMV decodes bf16 words
 
 // The high bf16 of each word is read with an FP load: the low element rides
 // along as extra mantissa bits (< 1 bf16 ulp), which saves an ALU and an FPU
@@ -241,9 +241,13 @@ E2E_INL void gemv_body(const vx_gemv_args_t* arg) {
 }
 
 __kernel void gemv(vx_gemv_args_t* __UNIFORM__ arg) {
-    switch (arg->T) {
-        case 1:  gemv_body<1, 16>(arg); break;
-        default: gemv_body<2, 8>(arg); break;
+    if constexpr (GEMV_OK) {
+        switch (arg->T) {
+            case 1:  gemv_body<1, 16>(arg); break;
+            default: gemv_body<2, 8>(arg); break;
+        }
+    } else {
+        (void)arg;
     }
 }
 

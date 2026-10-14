@@ -343,7 +343,7 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
     static const uint32_t gemv_t = getenv("GGML_VORTEX_GEMV_T") ? atoi(getenv("GGML_VORTEX_GEMV_T")) : VX_GEMV_TMAX;
     static const bool gemv_dec = getenv("GGML_VORTEX_NO_GEMV_DEC") == nullptr;
     const bool dec_fits = NT == TILE && dec_lmem(nkt) <= (1u << VX_CFG_LMEM_LOG_SIZE);
-    if (!IS_MX && !HAS_TSCALE && F::bits == 16 && T <= gemv_t && !(gemv_dec && dec_fits)) {
+    if (std::is_same<IT, vt::bf16>::value && T <= gemv_t && !(gemv_dec && dec_fits)) {
         for (uint32_t t0 = 0; t0 < T; t0 += VX_GEMV_TMAX) {
             vx_gemv_args_t g = {};
             g.w = dev_addr(w);
