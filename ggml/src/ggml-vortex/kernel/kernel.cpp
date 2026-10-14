@@ -9,15 +9,16 @@ using namespace e2e;
 // ---------------------------------------------------------------------------
 __kernel void linear_swap(linear_args_t* __UNIFORM__ arg) { linear_swap_body(arg); }
 
-// Decode (M <= TILE) swap-AB GEMM, one CTA: each warp owns TILE weight rows
-// at a time. Each TILE x KT weight tile is contiguous in the blocked layout,
-// so the warp loads its A fragments straight from DRAM. The activation tile
-// and its scales are first copied to local memory: as D-cache hits they
-// would queue behind the weight misses in the cache's MSHRs.
+// Skinny (M <= TT * TILE) swap-AB GEMM, one CTA. Each TILE x KT weight tile
+// is contiguous in the blocked layout, so a warp loads its A fragments
+// straight from DRAM. The activation rows and their scales are first copied
+// to local memory: as D-cache hits they would queue behind the weight misses
+// in the cache's MSHRs. With TT = 2, warp pairs take the same weight rows for
+// the two activation tiles, so the second warp's weight loads hit the lines
+// the first one fetched and DRAM streams the weights once per 2 * TILE rows.
 // One lane per output row stores (needs NT == TILE).
 #if E2E_TCU
 constexpr uint32_t DEC_CS_WORDS = CTA_NW * TILE * TILE;
-constexpr uint32_t DEC_XT_WORDS = TILE * KT_WORDS;   // activation words per K-tile in lmem
 
 // NT=8 B fragment: register r, lane l hold column (l%4)/2 + 2*(l/4) + 4*(r%2),
 // K word l%2 + 2*(r/2). With M <= 4 the odd registers are all padding, so
@@ -33,40 +34,48 @@ E2E_INL void dec_load_b(ctx::fragment_b& fb, const uint32_t* xp, uint32_t lane) 
   }
 }
 
-template <bool HALF>
+template <bool HALF, uint32_t TT>
 E2E_INL void linear_dec_body(const linear_args_t* arg) {
   constexpr uint32_t DLDM = KT_WORDS * (4 / sizeof(ctx::input_t));
   constexpr uint32_t SCW = LSW_BM / TILE * SC_TILE_WORDS;
+  constexpr uint32_t XT = TT * TILE * KT_WORDS;    // activation words per K-tile in lmem
+  constexpr uint32_t ST = TT * SC_TILE_WORDS;      // activation scale words per K-tile in lmem
+  constexpr uint32_t RW = CTA_NW / TT;             // warps across weight rows
+  static_assert(TT * TILE <= LSW_BN, "the activation tiles share one LSW_BN row block");
   const uint32_t wid = threadIdx.x / NT, lane = threadIdx.x % NT;
-  const uint32_t nkt = arg->num_kt, T = arg->M;
+  const uint32_t tt = wid % TT, rw = wid / TT;
+  const uint32_t nkt = arg->num_kt;
+  // Activation rows of this warp's tile.
+  const uint32_t T = arg->M > tt * TILE ? (arg->M - tt * TILE < TILE ? arg->M - tt * TILE : TILE) : 0;
   uint32_t* lmem = reinterpret_cast<uint32_t*>(__local_mem());
   float* cs = reinterpret_cast<float*>(lmem) + wid * TILE * TILE;
   uint32_t* xs = lmem + DEC_CS_WORDS;
-  uint32_t* ss = xs + nkt * DEC_XT_WORDS;
+  uint32_t* ss = xs + nkt * XT;
   {
     const uint32_t* X = reinterpret_cast<const uint32_t*>(arg->a);
-    for (uint32_t i = threadIdx.x; i < nkt * DEC_XT_WORDS; i += CTA_THREADS)
-      xs[i] = X[(i / DEC_XT_WORDS) * (LSW_BN * KT_WORDS) + i % DEC_XT_WORDS];
+    for (uint32_t i = threadIdx.x; i < nkt * XT; i += CTA_THREADS)
+      xs[i] = X[(i / XT) * (LSW_BN * KT_WORDS) + i % XT];
     if constexpr (IS_MX) {
       const uint32_t* XS = reinterpret_cast<const uint32_t*>(arg->a_sc);
-      for (uint32_t i = threadIdx.x; i < nkt * SC_TILE_WORDS; i += CTA_THREADS)
-        ss[i] = XS[(i / SC_TILE_WORDS) * (LSW_BN / TILE * SC_TILE_WORDS) + i % SC_TILE_WORDS];
+      for (uint32_t i = threadIdx.x; i < nkt * ST; i += CTA_THREADS)
+        ss[i] = XS[(i / ST) * (LSW_BN / TILE * SC_TILE_WORDS) + i % ST];
     }
     vortex::barrier(0).arrive_and_wait();
   }
   const float* rts = reinterpret_cast<const float*>(arg->row_scale);
+  if (rts) rts += tt * TILE;
   const float scale = arg->ts_a * arg->ts_w;
-  float* out = reinterpret_cast<float*>(arg->out);
-  for (uint32_t r0 = wid * TILE; r0 < arg->N; r0 += CTA_NW * TILE) {
+  float* out = reinterpret_cast<float*>(arg->out) + tt * TILE * arg->ldo;
+  for (uint32_t r0 = rw * TILE; r0 < arg->N; r0 += RW * TILE) {
     const uint32_t* wp = reinterpret_cast<const uint32_t*>(arg->w) + blk_word(r0, 0, LSW_BM, nkt);
-    const uint32_t* xp = xs;
+    const uint32_t* xp = xs + tt * TILE * KT_WORDS;
     ctx::fragment_a fa;
     ctx::fragment_b fb;
     ctx::fragment_acc acc;
     ctx::fill_fragment(acc, 0);
     if constexpr (HALF) ctx::fill_fragment(fb, 0);
     const uint32_t* gsa = nullptr;
-    const uint32_t* gsb = ss;
+    const uint32_t* gsb = ss + tt * SC_TILE_WORDS;
     if constexpr (IS_MX) {
       gsa = reinterpret_cast<const uint32_t*>(arg->w_sc) + (r0 / LSW_BM) * nkt * SCW + (r0 % LSW_BM) / TILE * SC_TILE_WORDS;
       ctx::load_mx_metadata(fa, gsa);
@@ -81,12 +90,12 @@ E2E_INL void linear_dec_body(const linear_args_t* arg) {
       // tile past the end (operand buffers carry slack).
       if constexpr (IS_MX) {
         gsa += SCW;
-        gsb += SC_TILE_WORDS;
+        gsb += ST;
         ctx::load_mx_metadata(fa, gsa);
         ctx::load_mx_metadata(fb, gsb);
       }
       wp += LSW_BM * KT_WORDS;
-      xp += DEC_XT_WORDS;
+      xp += XT;
     }
     ctx::store_matrix_sync<vt::col_major>(cs, acc, TILE);
     __asm__ volatile("" ::: "memory");
@@ -99,8 +108,9 @@ E2E_INL void linear_dec_body(const linear_args_t* arg) {
 __kernel void linear_dec(linear_args_t* __UNIFORM__ arg) {
 #if E2E_TCU
   if constexpr (NT == TILE) {
-    if (arg->M <= 4) linear_dec_body<true>(arg);
-    else             linear_dec_body<false>(arg);
+    if (arg->M <= 4)         linear_dec_body<true, 1>(arg);
+    else if (arg->M <= TILE) linear_dec_body<false, 1>(arg);
+    else                     linear_dec_body<false, 2>(arg);
   }
 #else
   (void)arg;

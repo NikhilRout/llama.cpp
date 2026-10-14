@@ -319,10 +319,10 @@ act_layout act_layout_for(uint32_t T, uint32_t K) {
     return l;
 }
 
-// linear_dec local memory: per-warp C tiles, then the activation's first TILE
-// rows and their scale tiles (plus the one-past-the-end scale prefetch).
-uint32_t dec_lmem(uint32_t nkt) {
-    return (CTA_NW * TILE * TILE + nkt * TILE * KT_WORDS + (nkt + 1) * SC_TILE_WORDS) * 4;
+// linear_dec local memory: per-warp C tiles, then tt * TILE activation rows
+// and their scale tiles (plus the one-past-the-end scale prefetch).
+uint32_t dec_lmem(uint32_t nkt, uint32_t tt = 1) {
+    return (CTA_NW * TILE * TILE + nkt * tt * TILE * KT_WORDS + (nkt + 1) * tt * SC_TILE_WORDS) * 4;
 }
 
 void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
@@ -336,8 +336,13 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
 
     // The SIMT GEMV streams W once per VX_GEMV_TMAX activation rows; above
     // GGML_VORTEX_GEMV_T rows the TCU GEMM takes over.
+    // linear_dec takes over wherever its activation tile fits in local memory:
+    // about half the GEMV's instructions per weight byte. GGML_VORTEX_NO_GEMV_DEC
+    // keeps the GEMV on every shape.
     static const uint32_t gemv_t = getenv("GGML_VORTEX_GEMV_T") ? atoi(getenv("GGML_VORTEX_GEMV_T")) : VX_GEMV_TMAX;
-    if (!IS_MX && !HAS_TSCALE && F::bits == 16 && T <= gemv_t) {
+    static const bool gemv_dec = getenv("GGML_VORTEX_NO_GEMV_DEC") == nullptr;
+    const bool dec_fits = NT == TILE && dec_lmem(nkt) <= (1u << VX_CFG_LMEM_LOG_SIZE);
+    if (!IS_MX && !HAS_TSCALE && F::bits == 16 && T <= gemv_t && !(gemv_dec && dec_fits)) {
         for (uint32_t t0 = 0; t0 < T; t0 += VX_GEMV_TMAX) {
             vx_gemv_args_t g = {};
             g.w = dev_addr(w);
@@ -385,7 +390,12 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
     l.out_mode = OUT_FP32;
     l.ldo = N;
     if (dec) {
-        for (uint32_t t0 = 0; t0 < T; t0 += TILE) {
+        // Two TILE-row tiles per launch stream the weights once per 2 * TILE rows.
+        static const bool dec2_off = getenv("GGML_VORTEX_NO_DEC2") != nullptr;
+        const bool fits2 = !dec2_off && 2 * TILE <= LSW_BN && dec_lmem(nkt, 2) <= (1u << VX_CFG_LMEM_LOG_SIZE);
+        for (uint32_t t0 = 0, step; t0 < T; t0 += step) {
+            const uint32_t tt = (fits2 && T - t0 > TILE) ? 2 : 1;
+            step = tt * TILE;
             linear_args_t c = l;
             c.a += 4ull * ((t0 / LSW_BN) * nkt * LSW_BN * KT_WORDS + (t0 % LSW_BN) * KT_WORDS);
             if (IS_MX) {
@@ -395,8 +405,8 @@ void rec_mul_mat(vx_recorder & R, const ggml_tensor * dst) {
                 c.row_scale += 4ull * t0;
             }
             c.out += (uint64_t)t0 * dst->nb[1];
-            c.M = std::min<uint32_t>(TILE, T - t0);
-            R.launch("linear_dec", c, 1, dec_lmem(nkt));
+            c.M = std::min<uint32_t>(step, T - t0);
+            R.launch("linear_dec", c, 1, dec_lmem(nkt, tt));
         }
     } else {
         R.launch("linear_swap", l, N / LSW_BM, lin_swap_lmem(), Tp / LSW_BN);
