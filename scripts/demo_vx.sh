@@ -3,12 +3,13 @@
 # paced to the projected Vortex (4 cores, NT=NW=32, 200 MHz).
 #
 #   demo_vx.sh [--prompt="what is an FPGA?"] [--format=bf16,lnsf4] [--N=64] [--emu]
-#   demo_vx.sh --chat [--format=lnsf4] [--emu]
+#   demo_vx.sh --chat [--format=lnsf4] [--N=32] [--emu]
 #
 #   --prompt  the question (default: "can you explain what quantization means?")
 #   --format  comma-separated formats, run in that order: bf16, fp16, nvfp4, lnsf4,
 #             or all (default: bf16,lnsf4). A format's backend is built on first use.
-#   --N       tokens to generate (default: 64)
+#   --N       tokens to generate (default: 64); with --chat, a cap on every reply
+#             (default: none)
 #   --chat    interactive chat in llama.cpp's own frontend (llama-cli), first format
 #             only, exactly as llama-cli prints it. Ctrl+C or /exit to quit.
 #   --emu     run on the CPU emulation of the projected Vortex instead of the board
@@ -22,11 +23,12 @@ FMTS="bf16,lnsf4"
 N=64
 CHAT=0
 EMU=0
+N_SET=0
 for arg in "$@"; do
   case "$arg" in
     --prompt=*) Q=${arg#*=} ;;
     --format=*) FMTS=${arg#*=} ;;
-    --N=*|--n=*) N=${arg#*=} ;;
+    --N=*|--n=*) N=${arg#*=}; N_SET=1 ;;
     --chat) CHAT=1 ;;
     --emu) EMU=1 ;;
     -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -90,6 +92,8 @@ if [ $CHAT = 1 ]; then
   F=${FMTS%%,*}
   B=$(backend $F) || exit 1
   echo "=== $F chat"
+  # --N caps every reply; without it replies run to the end of the answer.
+  [ $N_SET = 1 ] && COMMON+=(-n "$N")
   run $B/bin/llama-cli "${COMMON[@]}"
   exit
 fi
