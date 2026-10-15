@@ -10,7 +10,7 @@
 #             or all (default: bf16,lnsf4). A format's backend is built on first use.
 #   --N       tokens to generate (default: 64)
 #   --chat    interactive chat in llama.cpp's own frontend (llama-cli), first format
-#             only; timings print after every reply. Ctrl+C or /exit to quit.
+#             only, exactly as llama-cli prints it. Ctrl+C or /exit to quit.
 #   --emu     run on the CPU emulation of the projected Vortex instead of the board
 
 # The demo bitstream (fixed for the demo).
@@ -87,8 +87,8 @@ fi
 if [ $CHAT = 1 ]; then
   F=${FMTS%%,*}
   B=$(backend $F) || exit 1
-  echo "=== $F chat (log: $LOGS/chat_$F.log)"
-  run $B/bin/llama-cli "${COMMON[@]}" -cnv 2> $LOGS/chat_$F.log
+  echo "=== $F chat"
+  run $B/bin/llama-cli "${COMMON[@]}" -cnv
   exit
 fi
 
