@@ -46,7 +46,9 @@ mkdir -p "$LOGS"
 # its slowest thread, so more threads on this shared server only add stragglers.
 EMU_CPUS=16-31
 [ $EMU = 1 ] && T=16 || T=32
-COMMON=(-m "$MODEL" -t $T -c 2048 -ngl 99 -fa on -ot "token_embd\.weight=CPU" --temp 0)
+COMMON=(-m "$MODEL" -t $T -c 2048 -fa on -ot "token_embd\.weight=CPU" --temp 0)
+# The board backend is a GPU-type device; the emulation is an accelerator ggml uses as is.
+[ $EMU = 1 ] || COMMON+=(-ngl 99)
 
 # Backend build directory for format $1, built on first use.
 backend() {
@@ -88,7 +90,7 @@ if [ $CHAT = 1 ]; then
   F=${FMTS%%,*}
   B=$(backend $F) || exit 1
   echo "=== $F chat"
-  run $B/bin/llama-cli "${COMMON[@]}" -cnv
+  run $B/bin/llama-cli "${COMMON[@]}"
   exit
 fi
 
