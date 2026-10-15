@@ -83,7 +83,7 @@ run() {
 }
 
 if [ $EMU = 1 ]; then
-  echo "[CPU emulation of the projected Vortex: 4 cores, NT=NW=32, 300 MHz]"
+  echo "Vortex Backend (4-core NW=NT=32) @ 300 MHz"
 else
   echo "[U55C FPGA: $(basename "$BIN")]"
 fi
