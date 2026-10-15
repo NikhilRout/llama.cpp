@@ -42,7 +42,11 @@ cd "$(dirname "$0")/.." || exit 1
 MODEL=$HOME/models/Llama-3.2-1B-Instruct-BF16.gguf
 LOGS=$HOME/llama_runs/demo
 mkdir -p "$LOGS"
-COMMON=(-m "$MODEL" -t 32 -c 2048 -ngl 99 -fa on -ot "token_embd\.weight=CPU" --temp 0)
+# The emulation runs 16 threads on socket 1's physical cores: every op waits for
+# its slowest thread, so more threads on this shared server only add stragglers.
+EMU_CPUS=16-31
+[ $EMU = 1 ] && T=16 || T=32
+COMMON=(-m "$MODEL" -t $T -c 2048 -ngl 99 -fa on -ot "token_embd\.weight=CPU" --temp 0)
 
 # Backend build directory for format $1, built on first use.
 backend() {
@@ -68,7 +72,7 @@ backend() {
 run() {
   if [ $EMU = 1 ]; then
     # --poll 0: the emulator's OpenMP workers need the cores ggml would spin on.
-    OMP_NUM_THREADS=32 "$@" --poll 0
+    OMP_NUM_THREADS=$T taskset -c $EMU_CPUS "$@" --poll 0
   else
     BIN=$BIN GGML_VORTEX_BATCH=1 scripts/run_vx_board.sh "$@"
   fi
