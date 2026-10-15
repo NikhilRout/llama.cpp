@@ -1,6 +1,6 @@
 #!/bin/bash
 # Llama-3.2-1B on Vortex: the U55C demo bitstream, or with --emu a CPU emulation
-# paced to the projected Vortex (4 cores, NT=NW=32, 200 MHz).
+# paced to the projected Vortex (4 cores, NT=NW=32, 300 MHz).
 #
 #   demo_vx.sh [--prompt="what is an FPGA?"] [--format=bf16,lnsf4] [--N=64] [--emu]
 #   demo_vx.sh --chat [--format=lnsf4] [--N=32] [--emu]
@@ -83,7 +83,7 @@ run() {
 }
 
 if [ $EMU = 1 ]; then
-  echo "[CPU emulation of the projected Vortex: 4 cores, NT=NW=32, 200 MHz]"
+  echo "[CPU emulation of the projected Vortex: 4 cores, NT=NW=32, 300 MHz]"
 else
   echo "[U55C FPGA: $(basename "$BIN")]"
 fi

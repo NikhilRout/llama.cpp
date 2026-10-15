@@ -67,7 +67,7 @@ struct emu_cfg {
     void load() {
         cores     = env_f("GGML_VORTEX_EMU_CORES", 4);
         macpc     = env_f("GGML_VORTEX_EMU_MACPC", 135);
-        mhz       = env_f("GGML_VORTEX_EMU_MHZ", 200);
+        mhz       = env_f("GGML_VORTEX_EMU_MHZ", 300);
         eff       = env_f("GGML_VORTEX_EMU_EFF", 0.6);
         bw_gbs    = env_f("GGML_VORTEX_EMU_BW", cores * 64 * mhz * 1e6 / 1e9);
         bweff     = env_f("GGML_VORTEX_EMU_BWEFF", 0.6);
