@@ -1,7 +1,7 @@
 #!/bin/bash
 # usage: [BIN=<bitstream dir>] run_vx_board.sh <cmd...>
 # Runs a host program on the U55C with a Vortex bitstream (default: the W8 build), holding the board lock.
-BIN=${BIN:-$HOME/vortex_bitstreams/llama_wmma_nt8_nw8_iw1_lmem64_axi32}
+BIN=${BIN:-$HOME/vortex_bitstreams/llama_wmma_nt8_nw8_iw1_lmem64_rdarb}
 RT=${VX_RT:-$HOME/vortex/build/sw/runtime}
 source /opt/xilinx/xrt/setup.sh > /dev/null 2>&1
 exec 9> $HOME/.vortex_u55c_board.lock; flock 9

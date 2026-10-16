@@ -15,7 +15,7 @@
 #   --emu     run on the CPU emulation of the projected Vortex instead of the board
 
 # The demo bitstream (fixed for the demo).
-BIN=$HOME/vortex_bitstreams/llama_wmma_nt8_nw8_iw1_lmem64_axi32M
+BIN=$HOME/vortex_bitstreams/llama_wmma_nt8_nw8_iw1_lmem64_rdarb
 
 FORMATS="bf16 fp16 nvfp4 lnsf4"
 Q="can you explain what quantization means?"
